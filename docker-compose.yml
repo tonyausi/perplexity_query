@@ -1,0 +1,30 @@
+services:
+  api:
+    container_name: tenderflowapi
+    environment:
+      MODULE_NAME: tenderflowapi.app.main
+      AUTORELOAD: 1
+      DOCKER: True
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        dev: True
+    restart: on-failure
+    volumes:
+      - ./app:/tenderflowapi/app
+      - ./.env:/tenderflowapi/.env
+      - ./README.md:/tenderflowapi/README.md
+      - ./tests:/tenderflowapi/tests
+      - ./conftest.py:/tenderflowapi/conftest.py
+      - ./pytest.ini:/tenderflowapi/pytest.ini
+      - ./.flake8:/tenderflowapi/.flake8
+    ports:
+      - "10102:10102"
+    networks:
+      - ragflow
+    hostname: tenderflowapi
+
+networks:
+  ragflow:
+    driver: bridge
