@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Response, HTTPException
 import requests
 import yaml
 import os
@@ -8,7 +8,7 @@ from logging.config import dictConfig
 from dotenv import load_dotenv
 from .template import SYSTEM_CONTENT, USER_CONTENT_TEMPLATE
 import pandas as pd
-from fastapi import UploadFile, File
+from io import BytesIO
 from .lib.ragflow import (
     ask_questions_to_chat_assistant,
     get_chat_assistant_session,
@@ -109,10 +109,13 @@ async def query_perplexity_tender_openai(query: str, model="r1-1776"):
         return {"error": "Failed to get response from Perplexity API"}
 
 
-@app.post("/process-excel/")
-async def process_excel(file: UploadFile = File(...)):
-    # Read the uploaded excel file
-    df = pd.read_excel(file.file)
+@app.post("/process-excel/", response_class=Response)
+async def process_excel(file: UploadFile = File(...)) -> Response:
+    logger.info(f"file.filename: {file.filename}")
+    # Read the uploaded Excel file into a DataFrame
+    contents = await file.read()
+    input_stream = BytesIO(contents)
+    df = pd.read_excel(input_stream)
 
     # Check if the required column is present
     if "Requirement" not in df.columns:
@@ -125,37 +128,50 @@ async def process_excel(file: UploadFile = File(...)):
     try:
         session = get_chat_assistant_session()
     except Exception as e:
-        return {"error": f"Fail to create session duto {str(e)}"}
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create session with chat assistant: {str(e)}",
+        )
 
     # Get the responses from the chat assistant
     responses = []
     try:
-        responses = await ask_questions_to_chat_assistant(
+        responses = ask_questions_to_chat_assistant(
             session=session, questions=requirements
         )
+        # logger.info(f"RAG responses: {responses}")
     except Exception as e:
-        return {"error": f"Fail to ask questions to chat assistant due to {str(e)}"}
-
-    # Create a new dataframe with the responses
-    df["Supplier explanation / comments"] = responses
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to ask questions to chat assistant: {str(e)}",
+        )
 
     # Extract the answers and references from the responses
     parsed_responses = parse_answer(responses)
+    # logger.info(f"parsed_responses: {parsed_responses}")
 
     # Add the extracted information to the dataframe
     df["Supplier explanation / comments"] = parsed_responses[
         "Supplier explanation / comments"
     ]
-    df["Reference"] = parsed_responses["references"]
+    df["Reference"] = parsed_responses["Reference"]
+    # logger.info(f"Final response>:\n {df}")
 
-    # Save the new dataframe to an excel file
-    output_file_path = os.path.join(os.path.dirname(__file__), "output.xlsx")
-    df.to_excel(output_file_path, index=False)
+    # Save the new dataframe to an in-memory excel file
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Sheet1", index=False)
 
-    return {
-        "message": "File processed successfully",
-        "output_file": output_file_path,
+    output.seek(0)  # Move the cursor to the beginning
+
+    # Return response with Excel file
+    headers = {
+        "Content-Disposition": "attachment; filename=SeismaResponse.xlsx",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
+    return Response(
+        content=output.getvalue(), headers=headers, media_type=headers["Content-Type"]
+    )
 
 
 if __name__ == "__main__":
